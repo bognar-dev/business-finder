@@ -7,6 +7,7 @@ import (
 	"googlemaps.github.io/maps"
 	"log"
 	"os"
+	"time"
 )
 
 // Business represents a business entity
@@ -40,7 +41,8 @@ func NewNotionClient(apiKey, databaseID string, pageID string) *NotionClient {
 
 // CheckDatabaseExists checks if the Notion database exists
 func (nc *NotionClient) CheckDatabaseExists() bool {
-	_, err := nc.client.Database.Get(context.Background(), nc.databaseID)
+	res, err := nc.client.Database.Get(context.Background(), nc.databaseID)
+	fmt.Println(res)
 	return err == nil
 }
 
@@ -111,8 +113,37 @@ func (nc *NotionClient) CreateDatabase() error {
 	return err
 }
 
-// InsertBusiness inserts a business into the Notion database
+// Add a method to check if a business already exists in the Notion database
+func (nc *NotionClient) BusinessExists(placeID string) (bool, error) {
+	query := &notionapi.DatabaseQueryRequest{
+		Filter: &notionapi.PropertyFilter{
+			Property: "PlaceID",
+			RichText: &notionapi.TextFilter{
+				Equals: placeID,
+			},
+		},
+	}
+
+	res, err := nc.client.Database.Query(context.Background(), nc.databaseID, query)
+	if err != nil {
+		return false, err
+	}
+
+	return len(res.Results) > 0, nil
+}
+
+// Modify the InsertBusiness method to check for existing entries
 func (nc *NotionClient) InsertBusiness(business Business) error {
+	exists, err := nc.BusinessExists(business.PlaceID)
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		fmt.Printf("Business with PlaceID %s already exists, skipping...\n", business.PlaceID)
+		return nil
+	}
+
 	var multiSelectOptions []notionapi.Option
 	for _, t := range business.Type {
 		multiSelectOptions = append(multiSelectOptions, notionapi.Option{Name: t})
@@ -174,7 +205,7 @@ func (nc *NotionClient) InsertBusiness(business Business) error {
 		},
 	}
 
-	_, err := nc.client.Page.Create(context.Background(), &page)
+	_, err = nc.client.Page.Create(context.Background(), &page)
 	return err
 }
 
@@ -197,12 +228,14 @@ func main() {
 	notionClient := NewNotionClient(notionAPIKey, notionDatabaseID, notionPageID)
 
 	// Check if the Notion database exists
-	//if !notionClient.CheckDatabaseExists() {
-	fmt.Println("Database does not exist, creating it...")
-	err := notionClient.CreateDatabase()
-	if err != nil {
-		log.Fatalf("Failed to create Notion database: %v", err)
+	if !notionClient.CheckDatabaseExists() {
+		fmt.Println("Database does not exist, creating it...")
+		err := notionClient.CreateDatabase()
+		if err != nil {
+			log.Fatalf("Failed to create Notion database: %v", err)
+		}
 	}
+
 	// Initialize Google Maps client
 	mapsClient, err := maps.NewClient(maps.WithAPIKey(apiKey))
 	if err != nil {
@@ -216,61 +249,70 @@ func main() {
 			Lng: -5.066270,
 		},
 		Radius: 50000,
-		Type:   "bar",
+		Type:   "bar, art_gallery",
 	}
 
-	places, err := mapsClient.NearbySearch(context.Background(), req)
-	if err != nil {
-		log.Fatalf("Failed to perform text search: %v", err)
-	}
-
-	fmt.Println("Businesses in Falmouth without a website or with an old website:")
-	for _, place := range places.Results {
-		placeDetailsReq := &maps.PlaceDetailsRequest{
-			PlaceID: place.PlaceID,
-		}
-
-		details, err := mapsClient.PlaceDetails(context.Background(), placeDetailsReq)
+	for {
+		places, err := mapsClient.NearbySearch(context.Background(), req)
 		if err != nil {
-			log.Printf("Failed to get place details for %s: %v", place.Name, err)
-			continue
+			log.Fatalf("Failed to perform nearby search: %v", err)
 		}
 
-		websiteStatus := "No Website"
-		urgency := "High"
-		url := ""
+		fmt.Println("Businesses in Falmouth without a website or with an old website:")
+		for _, place := range places.Results {
+			placeDetailsReq := &maps.PlaceDetailsRequest{
+				PlaceID: place.PlaceID,
+			}
 
-		if details.Website != "" {
-			websiteStatus = "Has Website"
-			url = details.Website
-			urgency = "Medium"
+			details, err := mapsClient.PlaceDetails(context.Background(), placeDetailsReq)
+			if err != nil {
+				log.Printf("Failed to get place details for %s: %v", place.Name, err)
+				continue
+			}
+
+			websiteStatus := "No Website"
+			urgency := "High"
+			url := ""
+
+			if details.Website != "" {
+				websiteStatus = "Has Website"
+				url = details.Website
+				urgency = "Medium"
+			}
+
+			businessType := []string{"Other"}
+			if len(place.Types) > 0 {
+				businessType = place.Types
+			}
+
+			business := Business{
+				Name:          place.Name,
+				Address:       place.FormattedAddress,
+				PlaceID:       place.PlaceID,
+				Type:          businessType,
+				WebsiteStatus: websiteStatus,
+				Urgency:       urgency,
+				Contacted:     "Not Contacted",
+				URL:           url,
+			}
+			if business.WebsiteStatus == "No Website" {
+				business.URL = "https://www.google.com/maps/search/?api=1&query=" + business.Address
+			}
+
+			// Insert into Notion
+			err = notionClient.InsertBusiness(business)
+			if err != nil {
+				log.Printf("Failed to insert into Notion: %v", err)
+			} else {
+				fmt.Printf("Inserted: Name: %s, Address: %s, Types: %v, WebsiteStatus: %s, Urgency: %s\n", place.Name, place.FormattedAddress, businessType, websiteStatus, urgency)
+			}
 		}
 
-		businessType := []string{"Other"}
-		if len(place.Types) > 0 {
-			businessType = place.Types
+		if places.NextPageToken == "" {
+			break
 		}
 
-		business := Business{
-			Name:          place.Name,
-			Address:       place.FormattedAddress,
-			PlaceID:       place.PlaceID,
-			Type:          businessType,
-			WebsiteStatus: websiteStatus,
-			Urgency:       urgency,
-			Contacted:     "Not Contacted",
-			URL:           url,
-		}
-		if business.WebsiteStatus == "No Website" {
-			business.URL = "https://www.google.com/maps/search/?api=1&query=" + business.Address
-		}
-
-		// Insert into Notion
-		err = notionClient.InsertBusiness(business)
-		if err != nil {
-			log.Printf("Failed to insert into Notion: %v", err)
-		} else {
-			fmt.Printf("Inserted: Name: %s, Address: %s, Types: %v, WebsiteStatus: %s, Urgency: %s\n", place.Name, place.FormattedAddress, businessType, websiteStatus, urgency)
-		}
+		time.Sleep(2 * time.Second)
+		req.PageToken = places.NextPageToken
 	}
 }
