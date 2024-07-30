@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/joho/godotenv"
 	"github.com/jomei/notionapi"
 	"googlemaps.github.io/maps"
 	"log"
@@ -118,7 +119,7 @@ func (nc *NotionClient) BusinessExists(placeID string) (bool, error) {
 	query := &notionapi.DatabaseQueryRequest{
 		Filter: &notionapi.PropertyFilter{
 			Property: "PlaceID",
-			RichText: &notionapi.TextFilter{
+			RichText: &notionapi.TextFilterCondition{
 				Equals: placeID,
 			},
 		},
@@ -132,7 +133,6 @@ func (nc *NotionClient) BusinessExists(placeID string) (bool, error) {
 	return len(res.Results) > 0, nil
 }
 
-// Modify the InsertBusiness method to check for existing entries
 func (nc *NotionClient) InsertBusiness(business Business) error {
 	exists, err := nc.BusinessExists(business.PlaceID)
 	if err != nil {
@@ -210,13 +210,14 @@ func (nc *NotionClient) InsertBusiness(business Business) error {
 }
 
 func main() {
-	// Replace with your actual Google Places API key
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 	apiKey := os.Getenv("GOOGLE_PLACES_API_KEY")
 	if apiKey == "" {
 		log.Fatal("GOOGLE_PLACES_API_KEY must be set")
 	}
-
-	// Replace with your actual Notion API key and Database ID
 	notionAPIKey := os.Getenv("NOTION_API_KEY")
 	notionDatabaseID := os.Getenv("NOTION_DATABASE_ID")
 	if notionAPIKey == "" || notionDatabaseID == "" {
@@ -242,77 +243,138 @@ func main() {
 		log.Fatalf("Failed to create Google Maps client: %v", err)
 	}
 
-	// Request businesses in a specific area
-	req := &maps.NearbySearchRequest{
-		Location: &maps.LatLng{
-			Lat: 50.152573,
-			Lng: -5.066270,
-		},
-		Radius: 50000,
-		Type:   "bar, art_gallery",
+	placeTypes := []maps.PlaceType{
+		maps.PlaceTypeArtGallery,
+		maps.PlaceTypeBakery,
+		maps.PlaceTypeBank,
+		maps.PlaceTypeBar,
+		maps.PlaceTypeBeautySalon,
+		maps.PlaceTypeBicycleStore,
+		maps.PlaceTypeBookStore,
+		maps.PlaceTypeBowlingAlley,
+		maps.PlaceTypeCafe,
+		maps.PlaceTypeCampground,
+		maps.PlaceTypeClothingStore,
+		maps.PlaceTypeConvenienceStore,
+		maps.PlaceTypeDepartmentStore,
+		maps.PlaceTypeElectrician,
+		maps.PlaceTypeElectronicsStore,
+		maps.PlaceTypeFlorist,
+		maps.PlaceTypeFuneralHome,
+		maps.PlaceTypeGym,
+		maps.PlaceTypeHairCare,
+		maps.PlaceTypeHomeGoodsStore,
+		maps.PlaceTypeJewelryStore,
+		maps.PlaceTypeLaundry,
+		maps.PlaceTypeLibrary,
+		maps.PlaceTypeLiquorStore,
+		maps.PlaceTypeLocksmith,
+		maps.PlaceTypeLodging,
+		maps.PlaceTypeMealDelivery,
+		maps.PlaceTypeMealTakeaway,
+		maps.PlaceTypeMovieRental,
+		maps.PlaceTypeMovingCompany,
+		maps.PlaceTypeMuseum,
+		maps.PlaceTypeNightClub,
+		maps.PlaceTypePainter,
+		maps.PlaceTypePetStore,
+		maps.PlaceTypePhysiotherapist,
+		maps.PlaceTypePlumber,
+		maps.PlaceTypeRestaurant,
+		maps.PlaceTypeRoofingContractor,
+		maps.PlaceTypeRvPark,
+		maps.PlaceTypeShoeStore,
+		maps.PlaceTypeShoppingMall,
+		maps.PlaceTypeSpa,
+		maps.PlaceTypeStorage,
+		maps.PlaceTypeStore,
+		maps.PlaceTypeSupermarket,
+		maps.PlaceTypeTravelAgency,
+		maps.PlaceTypeVeterinaryCare,
 	}
 
-	for {
-		places, err := mapsClient.NearbySearch(context.Background(), req)
-		if err != nil {
-			log.Fatalf("Failed to perform nearby search: %v", err)
+	for _, placeType := range placeTypes {
+		fmt.Printf("Searching for places of type: %s\n", placeType)
+
+		req := &maps.NearbySearchRequest{
+			Location: &maps.LatLng{
+				Lat: 50.152573,
+				Lng: -5.066270,
+			},
+			Radius: 50000,
+			Type:   placeType,
 		}
 
-		fmt.Println("Businesses in Falmouth without a website or with an old website:")
-		for _, place := range places.Results {
-			placeDetailsReq := &maps.PlaceDetailsRequest{
-				PlaceID: place.PlaceID,
-			}
+		pageCount := 0
+		for {
+			pageCount++
+			fmt.Printf("Fetching page %d for %s\n", pageCount, placeType)
 
-			details, err := mapsClient.PlaceDetails(context.Background(), placeDetailsReq)
+			places, err := mapsClient.NearbySearch(context.Background(), req)
 			if err != nil {
-				log.Printf("Failed to get place details for %s: %v", place.Name, err)
-				continue
+				log.Printf("Failed to perform nearby search for %s: %v", placeType, err)
+				break
 			}
 
-			websiteStatus := "No Website"
-			urgency := "High"
-			url := ""
+			fmt.Printf("Found %d results on this page\n", len(places.Results))
 
-			if details.Website != "" {
-				websiteStatus = "Has Website"
-				url = details.Website
-				urgency = "Medium"
+			for _, place := range places.Results {
+				placeDetailsReq := &maps.PlaceDetailsRequest{
+					PlaceID: place.PlaceID,
+				}
+
+				details, err := mapsClient.PlaceDetails(context.Background(), placeDetailsReq)
+				if err != nil {
+					log.Printf("Failed to get place details for %s: %v", place.Name, err)
+					continue
+				}
+
+				websiteStatus := "No Website"
+				urgency := "High"
+				url := ""
+
+				if details.Website != "" {
+					websiteStatus = "Has Website"
+					url = details.Website
+					urgency = "Medium"
+				}
+
+				businessType := []string{"Other"}
+				if len(place.Types) > 0 {
+					businessType = place.Types
+				}
+
+				business := Business{
+					Name:          place.Name,
+					Address:       place.FormattedAddress,
+					PlaceID:       place.PlaceID,
+					Type:          businessType,
+					WebsiteStatus: websiteStatus,
+					Urgency:       urgency,
+					Contacted:     "Not Contacted",
+					URL:           url,
+				}
+				if business.WebsiteStatus == "No Website" {
+					business.URL = "https://www.google.com/maps/search/?api=1&query=" + business.Address
+				}
+
+				// Insert into Notion
+				err = notionClient.InsertBusiness(business)
+				if err != nil {
+					log.Printf("Failed to insert into Notion: %v", err)
+				} else {
+					fmt.Printf("Inserted: Name: %s, Address: %s, Types: %v, WebsiteStatus: %s, Urgency: %s\n", place.Name, place.FormattedAddress, businessType, websiteStatus, urgency)
+				}
 			}
 
-			businessType := []string{"Other"}
-			if len(place.Types) > 0 {
-				businessType = place.Types
+			if places.NextPageToken == "" {
+				fmt.Printf("No more pages for %s\n", placeType)
+				break
 			}
 
-			business := Business{
-				Name:          place.Name,
-				Address:       place.FormattedAddress,
-				PlaceID:       place.PlaceID,
-				Type:          businessType,
-				WebsiteStatus: websiteStatus,
-				Urgency:       urgency,
-				Contacted:     "Not Contacted",
-				URL:           url,
-			}
-			if business.WebsiteStatus == "No Website" {
-				business.URL = "https://www.google.com/maps/search/?api=1&query=" + business.Address
-			}
-
-			// Insert into Notion
-			err = notionClient.InsertBusiness(business)
-			if err != nil {
-				log.Printf("Failed to insert into Notion: %v", err)
-			} else {
-				fmt.Printf("Inserted: Name: %s, Address: %s, Types: %v, WebsiteStatus: %s, Urgency: %s\n", place.Name, place.FormattedAddress, businessType, websiteStatus, urgency)
-			}
+			fmt.Printf("Waiting before fetching next page...\n")
+			time.Sleep(5 * time.Second) // Increased delay to avoid rate limiting
+			req.PageToken = places.NextPageToken
 		}
-
-		if places.NextPageToken == "" {
-			break
-		}
-
-		time.Sleep(2 * time.Second)
-		req.PageToken = places.NextPageToken
 	}
 }
